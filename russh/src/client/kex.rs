@@ -7,7 +7,7 @@ use bytes::Bytes;
 use log::{debug, error, warn};
 use signature::Verifier;
 use ssh_encoding::{Decode, Encode};
-use ssh_key::{Mpint, PublicKey, Signature};
+use ssh_key::{Mpint, PublicKey, Signature, Certificate};
 
 use super::IncomingSshPacket;
 use crate::client::{Config, NewKeys};
@@ -263,8 +263,8 @@ impl ClientKex {
                 #[allow(clippy::indexing_slicing)] // length checked
                 let r = &mut &input.buffer[1..];
 
-                let server_host_key = Bytes::decode(r)?; // server public key.
-                let server_host_key = parse_public_key(&server_host_key)?;
+                let server_host_key_bytes = Bytes::decode(r)?; // server public key.
+                let server_host_key = parse_public_key(&server_host_key_bytes)?;
                 debug!(
                     "received server host key: {:?}",
                     server_host_key.to_openssh()
@@ -275,7 +275,7 @@ impl ClientKex {
                 kex.compute_shared_secret(&self.exchange.server_ephemeral)?;
 
                 let mut pubkey_vec = CryptoVec::new();
-                server_host_key.to_bytes()?.encode(&mut pubkey_vec)?;
+                server_host_key_bytes.encode(&mut pubkey_vec)?;
 
                 let exchange = &self.exchange;
                 let hash = HASH_BUFFER.with({
@@ -289,8 +289,49 @@ impl ClientKex {
                 let signature = Bytes::decode(r)?;
                 let signature = Signature::decode(&mut &signature[..])?;
 
-                if let Err(e) = Verifier::verify(&server_host_key, hash.as_ref(), &signature) {
-                    debug!("wrong server sig: {e:?}");
+                let mut verified = false;
+                if Verifier::verify(&server_host_key, hash.as_ref(), &signature).is_ok() {
+                    verified = true;
+                } else {
+                    // Try parsing as certificate
+                    if let Ok(cert) = Certificate::from_bytes(&server_host_key_bytes) {
+                        debug!("Parsed server host key as Certificate");
+                        let inner_key_data = cert.public_key().clone();
+                        let inner_public_key = PublicKey::new(inner_key_data, "");
+                        
+                        if Verifier::verify(&inner_public_key, hash.as_ref(), &signature).is_ok() {
+                            verified = true;
+                        } else {
+                            debug!("Certificate inner key verification failed");
+                        }
+                    }
+                }
+
+                if !verified {
+                    debug!("wrong server sig");
+                    return Err(Error::WrongServerSig);
+                }
+
+                let mut verified = false;
+                if Verifier::verify(&server_host_key, hash.as_ref(), &signature).is_ok() {
+                    verified = true;
+                } else {
+                    // Try parsing as certificate
+                    if let Ok(cert) = Certificate::from_bytes(&server_host_key_bytes) {
+                        debug!("Parsed server host key as Certificate");
+                        let inner_key_data = cert.public_key().clone();
+                        let inner_public_key = PublicKey::new(inner_key_data, "");
+                        
+                        if Verifier::verify(&inner_public_key, hash.as_ref(), &signature).is_ok() {
+                            verified = true;
+                        } else {
+                            debug!("Certificate inner key verification failed");
+                        }
+                    }
+                }
+
+                if !verified {
+                    debug!("wrong server sig");
                     return Err(Error::WrongServerSig);
                 }
 
