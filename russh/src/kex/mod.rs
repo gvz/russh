@@ -46,6 +46,7 @@ use sha2::{Sha256, Sha384, Sha512};
 use ssh_encoding::{Encode, Writer};
 use ssh_key::PublicKey;
 
+use crate::cert::PublicKeyOrCertificate;
 use crate::cipher::CIPHERS;
 use crate::client::GexParams;
 use crate::mac::{self, MACS};
@@ -120,7 +121,7 @@ pub(crate) enum KexProgress<T> {
         reset_seqn: bool,
     },
     Done {
-        server_host_key: Option<PublicKey>,
+        server_host_key: Option<PublicKeyOrCertificate>,
         newkeys: NewKeys,
     },
 }
