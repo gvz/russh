@@ -7,9 +7,9 @@ use {
 
 use crate::keys::key::PrivateKeyWithHashAlg;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
-pub(crate) enum PublicKeyOrCertificate {
+pub enum PublicKeyOrCertificate {
     PublicKey {
         key: PublicKey,
         hash_alg: Option<HashAlg>,
@@ -42,5 +42,12 @@ impl PublicKeyOrCertificate {
                 &mut reader,
             )?)),
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn decode_pne(buf: &[u8]) -> Result<Self, ssh_key::Error> {
+        let mut reader = buf;
+        let algo = String::decode(&mut reader)?;
+        Self::decode(&algo, buf)
     }
 }

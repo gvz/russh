@@ -10,14 +10,14 @@ use ssh_encoding::{Decode, Encode};
 use ssh_key::{Mpint, PublicKey, Signature};
 
 use super::IncomingSshPacket;
+use crate::cert::PublicKeyOrCertificate;
 use crate::client::{Config, NewKeys};
 use crate::kex::dh::groups::DhGroup;
-use crate::kex::{KexAlgorithm, KexAlgorithmImplementor, KexCause, KexProgress, KEXES};
-use crate::keys::key::parse_public_key;
+use crate::kex::{KEXES, KexAlgorithm, KexAlgorithmImplementor, KexCause, KexProgress};
 use crate::negotiation::{Names, Select};
 use crate::session::Exchange;
 use crate::sshbuffer::PacketWriter;
-use crate::{msg, negotiation, strict_kex_violation, CryptoVec, Error, SshId};
+use crate::{CryptoVec, Error, SshId, msg, negotiation, strict_kex_violation};
 
 thread_local! {
     static HASH_BUFFER: RefCell<CryptoVec> = RefCell::new(CryptoVec::new());
@@ -37,7 +37,7 @@ enum ClientKexState {
         kex: KexAlgorithm,
     },
     WaitingForNewKeys {
-        server_host_key: PublicKey,
+        server_host_key: PublicKeyOrCertificate,
         newkeys: NewKeys,
     },
 }
@@ -120,6 +120,7 @@ impl ClientKex {
                     negotiation::Client::read_kex(
                         &input.buffer,
                         &self.config.preferred,
+                        None,
                         None,
                         &self.cause,
                     )?
@@ -262,19 +263,15 @@ impl ClientKex {
                 #[allow(clippy::indexing_slicing)] // length checked
                 let r = &mut &input.buffer[1..];
 
-                let server_host_key = Bytes::decode(r)?; // server public key.
-                let server_host_key = parse_public_key(&server_host_key)?;
-                debug!(
-                    "received server host key: {:?}",
-                    server_host_key.to_openssh()
-                );
+                let server_host_key_bytes = Bytes::decode(r)?; // server public key.
+                let server_host_key = PublicKeyOrCertificate::decode_pne(&server_host_key_bytes)?;
 
                 let server_ephemeral = Bytes::decode(r)?;
                 self.exchange.server_ephemeral.extend(&server_ephemeral);
                 kex.compute_shared_secret(&self.exchange.server_ephemeral)?;
 
                 let mut pubkey_vec = CryptoVec::new();
-                server_host_key.to_bytes()?.encode(&mut pubkey_vec)?;
+                server_host_key_bytes.encode(&mut pubkey_vec)?;
 
                 let exchange = &self.exchange;
                 let hash = HASH_BUFFER.with({
@@ -288,7 +285,20 @@ impl ClientKex {
                 let signature = Bytes::decode(r)?;
                 let signature = Signature::decode(&mut &signature[..])?;
 
-                if let Err(e) = Verifier::verify(&server_host_key, hash.as_ref(), &signature) {
+                let verification_key = match &server_host_key {
+                    PublicKeyOrCertificate::Certificate(cert) => {
+                        debug!("received server certificate");
+                        PublicKey::new(cert.public_key().clone(), "")
+                    }
+                    PublicKeyOrCertificate::PublicKey { key, .. } => {
+                        debug!("received server host key");
+                        key.clone()
+                    }
+                };
+
+                if let Err(e) =
+                    Verifier::verify(&verification_key, hash.as_ref(), &signature)
+                {
                     debug!("wrong server sig: {e:?}");
                     return Err(Error::WrongServerSig);
                 }
