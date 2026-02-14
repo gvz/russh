@@ -57,6 +57,7 @@ use tokio::sync::mpsc::{
 use tokio::sync::oneshot;
 
 pub use crate::auth::AuthResult;
+use crate::cert::PublicKeyOrCertificate;
 use crate::channels::{
     Channel, ChannelMsg, ChannelReadHalf, ChannelRef, ChannelWriteHalf, WindowSizeRef,
 };
@@ -1544,7 +1545,14 @@ async fn reply<H: Handler>(
                     } else {
                         // This is the initial kex
                         if let Some(server_host_key) = &server_host_key {
-                            let check = handler.check_server_key(server_host_key).await?;
+                            let check = match server_host_key {
+                                PublicKeyOrCertificate::PublicKey { key, .. } => {
+                                    handler.check_server_key(key).await?
+                                }
+                                PublicKeyOrCertificate::Certificate(cert) => {
+                                    handler.validate_server_cert(cert).await?
+                                }
+                            };
                             if !check {
                                 return Err(crate::Error::UnknownKey.into());
                             }
@@ -1744,6 +1752,17 @@ pub trait Handler: Sized + Send {
     fn check_server_key(
         &mut self,
         server_public_key: &ssh_key::PublicKey,
+    ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
+        async { Ok(false) }
+    }
+
+    /// Called to check the server's certificate. This is a very important
+    /// step to help prevent man-in-the-middle attacks. The default
+    /// implementation rejects all certificates.
+    #[allow(unused_variables)]
+    fn validate_server_cert(
+        &mut self,
+        cert: &ssh_key::Certificate,
     ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
         async { Ok(false) }
     }
